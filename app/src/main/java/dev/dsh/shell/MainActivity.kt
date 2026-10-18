@@ -356,13 +356,22 @@ class MainActivity : AppCompatActivity() {
         val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
         val shave = (6 * resources.displayMetrics.density).toInt()
         safeTopPx = maxOf(0, bars.top - shave)
-        safeBottomPx = if (ime.bottom > 0) {
-            ime.bottom
-        } else {
-            maxOf(0, bars.bottom - shave)
-        }
+        // Клавиатура рисуется НАД панелью навигации, а её inset включает высоту
+        // этой панели. Сжимаем WebView только на клавиатуру (без зоны навигации):
+        // клавиатура накрывает нижний край WebView ровно встык — тёмной полосы
+        // нет, а страница получает обычный resize и поднимает поле ввода.
+        val kb = maxOf(0, ime.bottom - bars.bottom)
+        safeBottomPx = maxOf(0, bars.bottom - shave)
+        // Небольшой зазор между полем ввода и клавиатурой — чисто для красоты,
+        // только пока клавиатура открыта.
+        val kbGap = Math.round(4 * resources.displayMetrics.density)
         if (this::progress.isInitialized) {
             progress.translationY = safeTopPx.toFloat()
+        }
+        if (this::web.isInitialized) {
+            val container = web.parent as? View
+            container?.setPadding(0, 0, 0, if (kb > 0) kb + kbGap else 0)
+            web.requestLayout()
         }
         applyInsetsToPage()
         return insets
