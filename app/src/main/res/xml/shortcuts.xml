@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutDisabledMessage="@string/change_address_long"
+        android:shortcutId="change_url"
+        android:shortcutLongLabel="@string/change_address_long"
+        android:shortcutShortLabel="@string/change_address">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="dev.dsh.shell.MainActivity"
+            android:targetPackage="dev.dsh.shell">
+            <extra
+                android:name="change_url"
+                android:value="true" />
+        </intent>
+    </shortcut>
+
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutDisabledMessage="@string/refresh_page"
+        android:shortcutId="refresh"
+        android:shortcutLongLabel="@string/refresh_page"
+        android:shortcutShortLabel="@string/refresh">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="dev.dsh.shell.MainActivity"
+            android:targetPackage="dev.dsh.shell">
+            <extra
+                android:name="do_refresh"
+                android:value="true" />
+        </intent>
+    </shortcut>
+</shortcuts>
