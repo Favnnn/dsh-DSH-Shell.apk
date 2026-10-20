@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val PREFS = "dsh_shell"
         const val KEY_URL = "start_url"
+        const val KEY_SAVED = "saved_urls"
         const val EXTRA_CHANGE_URL = "change_url"
         const val EXTRA_REFRESH = "do_refresh"
     }
@@ -117,7 +118,7 @@ class MainActivity : AppCompatActivity() {
             errorView.visibility = View.GONE
             loadStored()
         }
-        findViewById<View>(R.id.btnChange).setOnClickListener { askUrl(initial = false) }
+        findViewById<View>(R.id.btnChange).setOnClickListener { askServer(initial = false) }
 
         val wantsChange = intent?.getStringExtra(EXTRA_CHANGE_URL) == "true"
         val wantsRefresh = intent?.getStringExtra(EXTRA_REFRESH) == "true"
@@ -125,10 +126,18 @@ class MainActivity : AppCompatActivity() {
         if (saved.isNullOrEmpty()) {
             askUrl(initial = true)
         } else {
+            // Активный адрес начинаем грузить сразу (быстрый старт), но выбор
+            // сервера показываем ПРИ КАЖДОМ входе — даже если адрес один
+            // (иначе не добавить второй). Шорткат «Обновить» выбор пропускает.
             startHost = Uri.parse(saved).host
             web.loadUrl(saved)
-            if (wantsChange) askUrl(initial = false)
-            if (wantsRefresh) web.reload()
+            if (wantsChange) {
+                askServer(initial = false)
+            } else if (!wantsRefresh) {
+                askServer(initial = true)
+            } else {
+                web.reload()
+            }
         }
     }
 
@@ -136,7 +145,7 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (intent.getStringExtra(EXTRA_CHANGE_URL) == "true" && !isFinishing) {
-            askUrl(initial = false)
+            askServer(initial = false)
         }
         if (intent.getStringExtra(EXTRA_REFRESH) == "true") {
             if (web.url.isNullOrEmpty()) loadStored() else web.reload()
@@ -171,6 +180,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 rememberWithoutToken(url)
+                flushCookies()
                 updateSystemBarColors()
                 applyInsetsToPage()
                 // Страница гидратируется асинхронно — подстраховаться повтором.
@@ -230,6 +240,65 @@ class MainActivity : AppCompatActivity() {
         web.loadUrl(url)
     }
 
+    /** Сохранённые адреса (порядок сохранён, максимум 4, дубли по host:port убраны). */
+    private fun savedUrls(): MutableList<String> =
+        prefs.getString(KEY_SAVED, "")
+            ?.split('\n')
+            ?.filter { it.isNotBlank() }
+            ?.toMutableList()
+            ?: mutableListOf()
+
+    private fun addSaved(url: String) {
+        val uri = Uri.parse(url)
+        val key = "${uri.scheme}://${uri.host}:${uri.port}"
+        val list = savedUrls()
+        list.removeAll { u ->
+            val x = Uri.parse(u)
+            "${x.scheme}://${x.host}:${x.port}" == key
+        }
+        list.add(url)
+        while (list.size > 4) list.removeAt(0)
+        prefs.edit().putString(KEY_SAVED, list.joinToString("\n")).apply()
+    }
+
+    /** Подключиться к адресу: активный адрес + добавление в список выбора. */
+    private fun connect(url: String) {
+        prefs.edit().putString(KEY_URL, url).apply()
+        addSaved(url)
+        errorView.visibility = View.GONE
+        startHost = Uri.parse(url).host
+        // Тот же адрес, что уже грузится/загружен, — перезагрузка не нужна.
+        if (web.url != url) web.loadUrl(url)
+    }
+
+    /**
+     * Выбор одного из сохранённых адресов (локальный / VPN-туннель). Тап —
+     * подключение; «Другой адрес…» — ручной ввод; отмена = выход при первом
+     * запуске.
+     */
+    private fun askServer(initial: Boolean) {
+        val list = savedUrls()
+        if (list.isEmpty()) {
+            askUrl(initial = initial)
+            return
+        }
+        val labels = list.map { u ->
+            val x = Uri.parse(u)
+            val host = x.host ?: u
+            if (x.port != -1) "$host:${x.port}" else host
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle(if (initial) R.string.pick_server_title else R.string.change_address_long)
+            .setItems(labels) { _, which -> connect(list[which]) }
+            .setNeutralButton(R.string.other_address) { _, _ -> askUrl(initial = initial) }
+            .setNegativeButton(if (initial) R.string.exit else R.string.cancel) { _, _ ->
+                if (initial) finish()
+            }
+            .setCancelable(!initial)
+            .create()
+            .show()
+    }
+
     /**
      * Первый вход обычно делают по адресу с ?token=... — сервер обменивает токен
      * на cookie. После первой успешной загрузки сохраняем адрес уже без query,
@@ -247,7 +316,19 @@ class MainActivity : AppCompatActivity() {
                 if (storedUri.port != -1) append(':').append(storedUri.port)
                 append(storedUri.path ?: "/")
             }
-            if (clean != stored) prefs.edit().putString(KEY_URL, clean).apply()
+            if (clean != stored) {
+                prefs.edit().putString(KEY_URL, clean).apply()
+                // Обновить этот адрес и в списке выбора (там он мог быть с токеном).
+                val list = savedUrls()
+                val idx = list.indexOfFirst { u ->
+                    val x = Uri.parse(u)
+                    x.host == storedUri.host && x.port == storedUri.port && x.scheme == storedUri.scheme
+                }
+                if (idx >= 0) {
+                    list[idx] = clean
+                    prefs.edit().putString(KEY_SAVED, list.joinToString("\n")).apply()
+                }
+            }
         }
     }
 
@@ -257,12 +338,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Отступ контента внутри самой страницы: html получает padding сверху/снизу
-     * (чуть меньше высоты системных панелей). Базовый CSS интерфейса задаёт
-     * html/body/#root height:100%, поэтому контент корректно сжимается, а фон
-     * страницы (цвет или фото) прорисовывается на весь экран, включая зоны под
-     * прозрачными панелями. Клавиатура тоже работает через этот padding —
-     * страница сжимается, поле ввода остаётся видимым.
+     * Отступ контента внутри самой страницы: его получает рамка приложения
+     * (первый элемент с боксом внутри #root, спуск сквозь служебные обёртки) —
+     * чуть меньше высоты системных панелей. WebView остаётся на весь экран
+     * ВСЕГДА, поэтому фон страницы (цвет или фото) никогда не сдвигается и
+     * тёмных полос не появляется. Высоту клавиатуры отдаём тем же механизмом:
+     * рамка поджимается, поле ввода поднимается над клавиатурой.
      */
     private fun applyInsetsToPage() {
         if (!this::web.isInitialized) return
@@ -274,34 +355,40 @@ class MainActivity : AppCompatActivity() {
         // первому элементу с реальным боксом — рамке приложения — и даём отступ
         // ей: padding + border-box + grid-template-rows minmax(0,1fr), как в
         // самом интерфейсе для заголовка Windows (AppFrame.module.css).
-        // Наблюдатель пере-применяет отступ после гидратации/пересозданий.
+        // Актуальные значения лежат в глобалах окна: таймер и наблюдатель
+        // создаются один раз и при каждом вызове читают СВЕЖИЕ значения
+        // (раньше замыкание держало старый отступ и откатывало его).
         web.evaluateJavascript(
             "(function(){try{" +
-                "var d=document,top='" + top + "',bottom='" + bottom + "',sched=false;" +
+                "var d=document;sched=false;" +
+                "window.__dshSafeTop='" + top + "';" +
+                "window.__dshSafeBottom='" + bottom + "';" +
                 "function target(){var r=d.getElementById('root');if(!r){return null;}" +
                 "var el=r.firstElementChild,g=0;" +
                 "while(el&&el.children.length===1&&g++<6){var s=getComputedStyle(el);" +
                 "if(s.display==='contents'||el.offsetHeight===0){el=el.firstElementChild;}else{break;}}" +
                 "return el;}" +
-                "function apply(){var k=target();if(!k){return;}" +
+                "window.__dshSafeApply=function(){" +
+                "var k=target();if(!k){return;}" +
+                "var top=window.__dshSafeTop,bottom=window.__dshSafeBottom;" +
                 "k.classList.add('dsh-safe-target');" +
                 "if(k.style.paddingTop!==top){k.style.setProperty('padding-top',top,'important');}" +
                 "if(k.style.paddingBottom!==bottom){k.style.setProperty('padding-bottom',bottom,'important');}" +
                 "k.style.setProperty('box-sizing','border-box','important');" +
-                "k.style.setProperty('grid-template-rows','minmax(0,1fr)','important');}" +
-                "apply();" +
+                "k.style.setProperty('grid-template-rows','minmax(0,1fr)','important');};" +
+                "window.__dshSafeApply();" +
                 "var st=d.getElementById('dsh-shell-safe-style');" +
                 "if(!st){st=d.createElement('style');st.id='dsh-shell-safe-style';" +
                 "(d.head||d.documentElement).appendChild(st);}" +
-                "st.textContent='#root .dsh-safe-target{padding-top:'+top+' !important;" +
-                "padding-bottom:'+bottom+' !important;box-sizing:border-box !important;" +
+                "st.textContent='#root .dsh-safe-target{padding-top:'+window.__dshSafeTop+' !important;" +
+                "padding-bottom:'+window.__dshSafeBottom+' !important;box-sizing:border-box !important;" +
                 "grid-template-rows:minmax(0,1fr) !important;}';" +
                 "if(!window.__dshSafeObserver){var mo=new MutationObserver(function(){" +
                 "if(sched){return;}sched=true;" +
-                "requestAnimationFrame(function(){sched=false;apply();});});" +
+                "requestAnimationFrame(function(){sched=false;window.__dshSafeApply();});});" +
                 "mo.observe(d.documentElement,{childList:true,subtree:true});" +
                 "window.__dshSafeObserver=mo;}" +
-                "if(!window.__dshSafeTimer){window.__dshSafeTimer=setInterval(apply,2000);}" +
+                "if(!window.__dshSafeTimer){window.__dshSafeTimer=setInterval(window.__dshSafeApply,2000);}" +
                 "}catch(e){}})()",
             null
         )
@@ -360,21 +447,36 @@ class MainActivity : AppCompatActivity() {
         // этой панели. Сжимаем WebView только на клавиатуру (без зоны навигации):
         // клавиатура накрывает нижний край WebView ровно встык — тёмной полосы
         // нет, а страница получает обычный resize и поднимает поле ввода.
-        val kb = maxOf(0, ime.bottom - bars.bottom)
-        safeBottomPx = maxOf(0, bars.bottom - shave)
-        // Небольшой зазор между полем ввода и клавиатурой — чисто для красоты,
-        // только пока клавиатура открыта.
+        // WebView остаётся на весь экран всегда — фото/фон не двигаются, тёмных
+        // полос нет. Высоту клавиатуры (она рисуется над зоной навигации, inset
+        // включает её) отдаём внутрь страницы: рамка поджимается, поле ввода
+        // поднимается над клавиатурой. Зазор — для красоты.
         val kbGap = Math.round(4 * resources.displayMetrics.density)
+        safeBottomPx = if (ime.bottom > 0) {
+            ime.bottom + kbGap
+        } else {
+            maxOf(0, bars.bottom - shave)
+        }
         if (this::progress.isInitialized) {
             progress.translationY = safeTopPx.toFloat()
         }
-        if (this::web.isInitialized) {
-            val container = web.parent as? View
-            container?.setPadding(0, 0, 0, if (kb > 0) kb + kbGap else 0)
-            web.requestLayout()
-        }
         applyInsetsToPage()
         return insets
+    }
+
+    /**
+     * WebView сбрасывает куки на диск лениво, по своему таймеру. Если процесс
+     * убит до этого (свайп из недавних, обновление, система) — свежая кука
+     * входа теряется, и сервер отвечает «authentication required». Принудительно
+     * сохраняем куки после каждого входа/успешной загрузки.
+     */
+    private fun flushCookies() {
+        CookieManager.getInstance().flush()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        flushCookies()
     }
 
     private fun showError(details: String?) {
@@ -411,10 +513,7 @@ class MainActivity : AppCompatActivity() {
                     input.error = getString(R.string.invalid_url)
                 } else {
                     dialog.dismiss()
-                    prefs.edit().putString(KEY_URL, normalized).apply()
-                    errorView.visibility = View.GONE
-                    startHost = Uri.parse(normalized).host
-                    web.loadUrl(normalized)
+                    connect(normalized)
                 }
             }
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {

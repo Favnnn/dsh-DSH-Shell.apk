@@ -17,4 +17,6 @@
     <string name="downloading">Загрузка</string>
     <string name="download_started">Загрузка: %s</string>
     <string name="no_app">Нет приложения для этой ссылки</string>
+    <string name="pick_server_title">Выберите сервер</string>
+    <string name="other_address">Другой адрес…</string>
 </resources>
