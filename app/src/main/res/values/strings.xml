@@ -19,4 +19,5 @@
     <string name="no_app">Нет приложения для этой ссылки</string>
     <string name="pick_server_title">Выберите сервер</string>
     <string name="other_address">Другой адрес…</string>
+    <string name="auth_required_hint">Сервер требует вход по токену.\n\nНажми «Сменить адрес» → «Другой адрес…» и вставь адрес вида http://…:8321/?token=… — он печатается в консоли dsh web при каждом запуске. После этого вход сохранится.</string>
 </resources>

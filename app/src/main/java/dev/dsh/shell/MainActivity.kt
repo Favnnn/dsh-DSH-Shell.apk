@@ -56,6 +56,8 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var safeTopPx = 0
     private var safeBottomPx = 0
+    /** Основная загрузка упала с ошибкой — адрес с токеном не стирать. */
+    private var pageFailed = false
 
     private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
     private lateinit var notifPermissionLauncher: ActivityResultLauncher<String>
@@ -179,13 +181,18 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageFinished(view: WebView, url: String) {
-                rememberWithoutToken(url)
+                // Токен из адреса стираем ТОЛЬКО после успешной загрузки: сервер
+                // харнеса подтверждает токен, обменивает его на куку и делает
+                // редирект на чистый './'. Если загрузка упала с ошибкой — адрес
+                // с токеном обязан остаться для повторной попытки.
+                if (!pageFailed) rememberWithoutToken(url)
                 flushCookies()
                 updateSystemBarColors()
                 applyInsetsToPage()
                 // Страница гидратируется асинхронно — подстраховаться повтором.
                 web.postDelayed({ applyInsetsToPage() }, 1200)
                 web.postDelayed({ applyInsetsToPage() }, 4000)
+                detectAuthRequired()
             }
 
             override fun onReceivedError(
@@ -193,7 +200,13 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest,
                 error: WebResourceError
             ) {
-                if (request.isForMainFrame) showError(error.description?.toString())
+                if (request.isForMainFrame) {
+                    pageFailed = true
+                    val u = request.url
+                    val where = (u.host ?: "") + if (u.port != -1) ":${u.port}" else ""
+                    val details = error.description?.toString().orEmpty()
+                    showError(if (where.isEmpty()) details else "$details\n($where)")
+                }
             }
         }
 
@@ -462,6 +475,24 @@ class MainActivity : AppCompatActivity() {
         }
         applyInsetsToPage()
         return insets
+    }
+
+    /**
+     * Сервер харнеса отдаёт на индекс 401 с этим текстом, когда у запроса нет
+     * валидной куки для связки host:port (нет входа по токену, сменился
+     * экземпляр сервера, хранилище WebView очищено). Показываем понятный экран
+     * с инструкцией вместо сырого текста.
+     */
+    private fun detectAuthRequired() {
+        web.evaluateJavascript(
+            "(function(){try{return ((document.body&&document.body.innerText)||'')" +
+                ".slice(0,200);}catch(e){return '';}})()"
+        ) { text ->
+            val body = text?.trim()?.removeSurrounding("\"") ?: return@evaluateJavascript
+            if (body.contains("authentication required", ignoreCase = true)) {
+                showError(getString(R.string.auth_required_hint))
+            }
+        }
     }
 
     /**
